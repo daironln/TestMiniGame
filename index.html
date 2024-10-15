@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Minijuego - Integración con Twitter y Telegram Auth</title>
+</head>
+<body>
+    <h1>Bienvenido al Minijuego</h1>
+
+    <!-- Widget de inicio de sesión de Telegram -->
+    <div id="telegram-login-placeholder">
+        <script async src="https://telegram.org/js/telegram-widget.js?19" 
+                data-telegram-login="KeyshiBrosBot" 
+                data-size="large" 
+                data-userpic="false"
+                data-lang="en"
+                data-radius="5"
+                data-request-access="write"
+                data-onauth="onTelegramAuth(user)">
+        </script>
+    </div>
+
+    <!-- Botones -->
+    <button id="twitter-login-btn" style="display:none;">Conectar con Twitter</button>
+    <button id="check-follow-btn" style="display:none;">Verificar si sigues a FusyFox</button>
+    <button id="click-btn" style="display:none;">¡Haz clic aquí!</button>
+    <p id="status"></p>
+
+    <!-- Estadísticas del juego -->
+    <div id="game-stats" style="display:none;">
+        <h2>Estadísticas del Juego</h2>
+        <p>Nivel: <span id="level">0</span></p>
+        <p>Energía: <span id="energy">0</span></p>
+        <p>Monedas: <span id="coins">0</span></p>
+        <p>Puntos de Experiencia: <span id="experience-points">0</span></p>
+        <p>Puntos Ganados: <span id="points-earned">0</span></p>
+    </div>
+
+    <script type="text/javascript">
+        const backendUrl = 'https://fusyverse-dmf3hxccahcgeca2.centralus-01.azurewebsites.net'; // Reemplaza con tu URL real del backend
+        const gameId = '7dc5ae8c-a4d3-45ef-adac-80d33144e54d'; // Reemplaza con tu gameId real
+        const missionId = 'e3c95135-afd8-46e8-8ff0-59224b7be3fb'; // Reemplaza con tu missionId real
+        const score = 100; // Puntaje para completar la misión
+
+        // Elementos del DOM
+        const loginBtn = document.getElementById('twitter-login-btn');
+        const checkFollowBtn = document.getElementById('check-follow-btn');
+        const clickBtn = document.getElementById('click-btn');
+        const statusText = document.getElementById('status');
+
+        // Variables del estado del juego
+        let accumulatedClicks = 0;
+        let isSending = false;
+        let clickInterval = null;
+        let localPointsEarned = 0;
+
+        // Estadísticas iniciales del juego (se actualizarán desde el servidor)
+        let gameStats = {
+            level: 1,
+            energy: 1500,
+            maxEnergy: 1500,
+            coins: 0,
+            experiencePoints: 0,
+            pointsEarned: 0,
+            pointsPerClick: 100,
+            energyCostPerClick: 1,
+            energyRecoveryRate: 0.2083 // Valor por defecto; se actualizará desde el servidor
+        };
+
+        // Listeners de eventos
+        loginBtn.addEventListener('click', initiateTwitterLogin);
+        checkFollowBtn.addEventListener('click', checkIfUserFollows);
+        clickBtn.addEventListener('click', handleClickAction);
+
+        // Función para manejar la autenticación de Telegram
+        function onTelegramAuth(user) {
+            console.log('Usuario autenticado:', user);
+            alert('Hola ' + user.first_name + '! Tu ID es ' + user.id);
+
+            // Preparar el cuerpo de la solicitud
+            const requestBody = {
+                Id: user.id,
+                FirstName: user.first_name,
+                LastName: user.last_name,
+                Username: user.username,
+                PhotoUrl: user.photo_url,
+                AuthDate: user.auth_date,
+                hash: user.hash
+            };
+
+            console.log(JSON.stringify(requestBody));
+
+            // Enviar los datos de autenticación de Telegram a tu API para obtener el token de autenticación
+            fetch(`${backendUrl}/api/auth/telegram-login/KeyshiBrosBot`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(requestBody)
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('Token recibido:', data.token);
+
+                // Almacenar el token y los datos del usuario
+                localStorage.setItem('authToken', data.token);
+                localStorage.setItem('telegramUser', JSON.stringify(user));
+
+                // Ocultar el widget de inicio de sesión de Telegram
+                document.getElementById('telegram-login-placeholder').style.display = 'none';
+
+                // Mostrar el botón de conexión con Twitter
+                loginBtn.style.display = 'inline';
+
+                statusText.textContent = `Hola, ${user.first_name}! Estás autenticado vía Telegram. Ahora puedes conectar tu cuenta de Twitter.`;
+            })
+            .catch((error) => {
+                console.error('Error:', error);
+                statusText.textContent = 'Ocurrió un error durante la autenticación con Telegram.';
+            });
+        }
+
+        // Función para iniciar sesión con Twitter
+        function initiateTwitterLogin() {
+            const token = localStorage.getItem('authToken');
+            console.log('Token para inicio de sesión con Twitter:', token);
+            if (!token) {
+                statusText.textContent = 'Debes estar autenticado vía Telegram.';
+                return;
+            }
+
+            fetch(`${backendUrl}/twitter/login?gameId=${gameId}`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': 'Bearer ' + token
+                }
+            })
+            .then(response => {
+                console.log('Estado de la respuesta:', response.status);
+                return response.text().then(text => {
+                    console.log('Texto de la respuesta:', text);
+                    if (!response.ok) {
+                        throw new Error(`Error HTTP! estado: ${response.status}, cuerpo: ${text}`);
+                    }
+                    return JSON.parse(text);
+                });
+            })
+            .then(data => {
+                if (data.url) {
+                    // Redirigir al usuario a la URL de autorización de Twitter
+                    window.location.href = data.url;
+                } else {
+                    statusText.textContent = 'No se pudo obtener la URL de autorización de Twitter.';
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                statusText.textContent = 'Ocurrió un error durante el inicio de sesión con Twitter.';
+            });
+        }
+
+        // Función para verificar si el usuario sigue a la cuenta principal de FusyFox
+        function checkIfUserFollows() {
+            let token = localStorage.getItem('authToken');
+            console.log('Token antes de verificar si el usuario sigue:', token);
+
+            if (!token) {
+                statusText.textContent = 'Debes estar autenticado vía Telegram.';
+                return;
+            }
+
+            const payload = {
+                MissionId: missionId,
+                GameId: gameId,
+                Score: score
+            };
+
+            fetch(`${backendUrl}/twitter/follow-principal`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer ' + token
+                },
+                body: JSON.stringify(payload)
+            })
+            .then(response => {
+                if (response.ok) {
+                    statusText.textContent = '¡Misión completada exitosamente!';
+                    // Ahora, podemos mostrar el botón para jugar
+                    checkFollowBtn.style.display = 'none';
+                    clickBtn.style.display = 'inline';
+                    document.getElementById('game-stats').style.display = 'block';
+
+                    // Obtener el progreso inicial del jugador
+                    getPlayerProgress();
+
+                } else if (response.status === 401) {
+                    statusText.textContent = 'Tu sesión ha expirado o es inválida. Por favor, inicia sesión nuevamente.';
+                } else {
+                    response.text().then(text => {
+                        statusText.textContent = `Misión fallida: ${text}`;
+                    });
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                statusText.textContent = 'Ocurrió un error al verificar el estado de seguimiento.';
+            });
+        }
+
+        // Función para manejar la acción de clic
+        function handleClickAction() {
+            const token = localStorage.getItem('authToken');
+            const telegramUser = JSON.parse(localStorage.getItem('telegramUser'));
+
+            if (!token || !telegramUser) {
+                statusText.textContent = 'Debes estar autenticado vía Telegram.';
+                return;
+            }
+
+            // Verificar si el jugador tiene suficiente energía
+            if (gameStats.energy < gameStats.energyCostPerClick) {
+                statusText.textContent = '¡No tienes suficiente energía!';
+                return;
+            }
+
+            accumulatedClicks++;
+            gameStats.energy -= gameStats.energyCostPerClick;
+            localPointsEarned += gameStats.pointsPerClick; // Incrementar puntos locales
+
+            // Actualizar la interfaz de usuario inmediatamente
+            updateGameStatsUI();
+
+            // Iniciar el intervalo para enviar datos al servidor si aún no ha iniciado
+            if (!isSending) {
+                isSending = true;
+                clickInterval = setInterval(sendAccumulatedClicks, 5000); // Enviar cada 5 segundos
+            }
+        }
+
+        // Función para enviar los clics acumulados al servidor
+        function sendAccumulatedClicks() {
+            const token = localStorage.getItem('authToken');
+            const telegramUser = JSON.parse(localStorage.getItem('telegramUser'));
+
+            if (!token || !telegramUser) {
+                statusText.textContent = 'Debes estar autenticado vía Telegram.';
+                clearInterval(clickInterval);
+                isSending = false;
+                return;
+            }
+
+            // Si no hay clics acumulados, no enviar solicitud
+            if (accumulatedClicks === 0) {
+                return;
+            }
+
+            // Construir el cuerpo de la solicitud
+            const requestBody = {
+                userId: telegramUser.id,
+                gameId: gameId,
+                inputData: '',
+                actionTimestamp: new Date().toISOString(),
+                actionType: 'Click',
+                actionValue: accumulatedClicks.toString()
+            };
+
+            // Enviar la solicitud al endpoint /api/games/play
+            fetch(`${backendUrl}/api/games/play`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer ' + token
+                },
+                body: JSON.stringify(requestBody)
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('Respuesta de juego:', data);
+
+                // Asegurarse de que data contiene las propiedades esperadas
+                if (!data || typeof data !== 'object') {
+                    throw new Error('Datos inválidos recibidos del servidor.');
+                }
+
+                // Actualizar las estadísticas del juego basándose en la respuesta del servidor
+                gameStats.level = data.level ?? gameStats.level;
+                gameStats.energy = Number(data.energy ?? gameStats.energy);
+                gameStats.maxEnergy = data.maxEnergy ?? gameStats.maxEnergy;
+                gameStats.coins = data.coins ?? gameStats.coins;
+                gameStats.experiencePoints = data.experiencePoints ?? gameStats.experiencePoints;
+                // Actualizar pointsEarned sumando los puntos locales acumulados
+                gameStats.pointsEarned = (data.pointsEarned ?? gameStats.pointsEarned) + localPointsEarned;
+                gameStats.pointsPerClick = data.pointsPerClick ?? gameStats.pointsPerClick;
+                gameStats.energyCostPerClick = data.energyCostPerClick ?? gameStats.energyCostPerClick;
+                gameStats.energyRecoveryRate = data.energyRecoveryRate ?? gameStats.energyRecoveryRate;
+
+                // Reiniciar localPointsEarned
+                localPointsEarned = 0;
+
+                // Actualizar la interfaz de usuario
+                updateGameStatsUI();
+
+                // Reiniciar los clics acumulados
+                accumulatedClicks = 0;
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                statusText.textContent = 'Ocurrió un error durante el juego.';
+            });
+        }
+
+        // Función para obtener el progreso inicial del jugador
+        function getPlayerProgress() {
+            const token = localStorage.getItem('authToken');
+            const telegramUser = JSON.parse(localStorage.getItem('telegramUser'));
+
+            if (!token || !telegramUser) {
+                statusText.textContent = 'Debes estar autenticado vía Telegram.';
+                return;
+            }
+
+            fetch(`${backendUrl}/api/games/${gameId}/progress`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': 'Bearer ' + token
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('Progreso del jugador:', data);
+
+                // Asegurarse de que data contiene las propiedades esperadas
+                if (!data || typeof data !== 'object') {
+                    throw new Error('Datos inválidos recibidos del servidor.');
+                }
+
+                // Actualizar las estadísticas del juego con asignaciones seguras
+                gameStats.level = data.level ?? gameStats.level;
+                gameStats.energy = Number(data.energy ?? gameStats.energy);
+                gameStats.maxEnergy = data.maxEnergy ?? gameStats.maxEnergy;
+                gameStats.coins = data.coins ?? gameStats.coins;
+                gameStats.experiencePoints = data.experiencePoints ?? gameStats.experiencePoints;
+                gameStats.pointsEarned = data.pointsEarned ?? gameStats.pointsEarned;
+                gameStats.pointsPerClick = data.pointsPerClick ?? gameStats.pointsPerClick;
+                gameStats.energyCostPerClick = data.energyCostPerClick ?? gameStats.energyCostPerClick;
+                gameStats.energyRecoveryRate = data.energyRecoveryRate ?? (gameStats.maxEnergy / 7200);
+
+                updateGameStatsUI();
+
+                // Iniciar la regeneración de energía
+                startEnergyRegeneration();
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                statusText.textContent = 'Ocurrió un error al obtener el progreso del jugador.';
+            });
+        }
+
+        // Función para actualizar las estadísticas del juego en la interfaz de usuario
+        function updateGameStatsUI() {
+            document.getElementById('level').textContent = gameStats.level ?? '1';
+            let energyValue = (typeof gameStats.energy === 'number' && !isNaN(gameStats.energy)) ? gameStats.energy.toFixed(2) : '0.00';
+            let maxEnergyValue = (typeof gameStats.maxEnergy === 'number' && !isNaN(gameStats.maxEnergy)) ? gameStats.maxEnergy : '1500';
+            document.getElementById('energy').textContent = `${energyValue} / ${maxEnergyValue}`;
+            document.getElementById('coins').textContent = gameStats.coins ?? '0';
+            document.getElementById('experience-points').textContent = gameStats.experiencePoints ?? '0';
+
+            // Actualizar pointsEarned sumando localPointsEarned
+            let totalPointsEarned = gameStats.pointsEarned + localPointsEarned;
+            document.getElementById('points-earned').textContent = totalPointsEarned;
+        }
+
+        // Función para regenerar energía con el tiempo usando energyRecoveryRate del servidor
+        function startEnergyRegeneration() {
+            setInterval(() => {
+                // Asegurarse de que energyRecoveryRate es un número válido
+                let recoveryRate = (typeof gameStats.energyRecoveryRate === 'number' && !isNaN(gameStats.energyRecoveryRate)) ? gameStats.energyRecoveryRate : (gameStats.maxEnergy / 7200);
+                gameStats.energy = Math.min(gameStats.energy + recoveryRate, gameStats.maxEnergy);
+                updateGameStatsUI();
+            }, 1000); // Actualizar cada segundo
+        }
+
+        // Manejar la devolución de llamada después de la autenticación con Twitter
+        window.onload = function() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const authSuccess = urlParams.get('authSuccess')?.toLowerCase();
+            console.log(`Auth Success: ${authSuccess}`);
+
+            if (authSuccess === 'true') {
+                // Almacenar en localStorage que el usuario está conectado con Twitter
+                localStorage.setItem('twitterConnected', 'true');
+                // Ocultar el botón de inicio de sesión con Twitter y mostrar el botón de verificar seguimiento
+                loginBtn.style.display = 'none';
+                checkFollowBtn.style.display = 'inline';
+                statusText.textContent = 'Conectado exitosamente con Twitter. Ahora verifica si sigues a FusyFox.';
+            } else if (authSuccess === 'false') {
+                statusText.textContent = 'La autenticación con Twitter falló. Por favor, inténtalo nuevamente.';
+            } else {
+                // Verificar si el usuario ya está autenticado vía Telegram
+                const telegramUser = JSON.parse(localStorage.getItem('telegramUser'));
+                if (telegramUser) {
+                    // Ocultar el widget de inicio de sesión de Telegram
+                    document.getElementById('telegram-login-placeholder').style.display = 'none';
+                    // Verificar si ya está conectado con Twitter
+                    const twitterConnected = localStorage.getItem('twitterConnected');
+                    if (twitterConnected === 'true') {
+                        // Mostrar el botón de verificar seguimiento
+                        loginBtn.style.display = 'none';
+                        checkFollowBtn.style.display = 'inline';
+                        statusText.textContent = `Bienvenido de nuevo, ${telegramUser.first_name}! Puedes verificar si sigues a FusyFox.`;
+                    } else {
+                        // Mostrar el botón de inicio de sesión con Twitter
+                        loginBtn.style.display = 'inline';
+                        statusText.textContent = `Bienvenido de nuevo, ${telegramUser.first_name}! Puedes conectar tu cuenta de Twitter.`;
+                    }
+                } else {
+                    // Mostrar el widget de inicio de sesión de Telegram
+                    document.getElementById('telegram-login-placeholder').style.display = 'block';
+                    statusText.textContent = 'Por favor, inicia sesión con Telegram para continuar.';
+                }
+            }
+        };
+    </script>
+</body>
+</html>
